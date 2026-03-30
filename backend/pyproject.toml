@@ -1,0 +1,17 @@
+[project]
+name = "pm-backend"
+version = "0.1.0"
+description = "Project Management MVP backend"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.121.0",
+  "httpx>=0.28.1",
+  "itsdangerous>=2.2.0",
+  "python-multipart>=0.0.20",
+  "uvicorn[standard]>=0.38.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4.2",
+]

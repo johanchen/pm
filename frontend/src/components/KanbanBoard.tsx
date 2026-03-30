@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -15,15 +15,125 @@ import { KanbanColumn } from "@/components/KanbanColumn";
 import { KanbanCardPreview } from "@/components/KanbanCardPreview";
 import { createId, initialData, moveCard, type BoardData } from "@/lib/kanban";
 
+type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 export const KanbanBoard = () => {
   const [board, setBoard] = useState<BoardData>(() => initialData);
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
+  const [syncState, setSyncState] = useState<"idle" | "syncing" | "error">(
+    "idle"
+  );
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    {
+      role: "assistant",
+      content:
+        "Ask me to create, edit, or move cards and I will update the board when needed.",
+    },
+  ]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatState, setChatState] = useState<"idle" | "sending" | "error">(
+    "idle"
+  );
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isHydratedRef = useRef(false);
+  const hasLocalEditsRef = useRef(false);
+  const latestBoardRef = useRef(board);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 6 },
     })
   );
+
+  const persistBoard = useCallback(async (snapshot: BoardData) => {
+    setSyncState("syncing");
+    try {
+      const response = await fetch("/api/board", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(snapshot),
+      });
+      if (!response.ok) {
+        throw new Error("Unable to save board.");
+      }
+      hasLocalEditsRef.current = false;
+      setSyncState("idle");
+    } catch {
+      setSyncState("error");
+    }
+  }, []);
+
+  const schedulePersist = useCallback(
+    (snapshot: BoardData) => {
+      latestBoardRef.current = snapshot;
+      hasLocalEditsRef.current = true;
+
+      if (!isHydratedRef.current) {
+        return;
+      }
+
+      if (persistTimerRef.current) {
+        clearTimeout(persistTimerRef.current);
+      }
+
+      persistTimerRef.current = setTimeout(() => {
+        persistTimerRef.current = null;
+        void persistBoard(latestBoardRef.current);
+      }, 250);
+    },
+    [persistBoard]
+  );
+
+  const updateBoard = useCallback(
+    (updater: (current: BoardData) => BoardData) => {
+      setBoard((current) => {
+        const next = updater(current);
+        schedulePersist(next);
+        return next;
+      });
+    },
+    [schedulePersist]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrateBoard = async () => {
+      try {
+        const response = await fetch("/api/board", { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error("Unable to load board.");
+        }
+        const serverBoard = (await response.json()) as BoardData;
+        if (!cancelled && !hasLocalEditsRef.current) {
+          setBoard(serverBoard);
+          latestBoardRef.current = serverBoard;
+          setSyncState("idle");
+        }
+      } catch {
+        if (!cancelled) {
+          setSyncState("error");
+        }
+      } finally {
+        isHydratedRef.current = true;
+        if (!cancelled && hasLocalEditsRef.current) {
+          void persistBoard(latestBoardRef.current);
+        }
+      }
+    };
+
+    void hydrateBoard();
+
+    return () => {
+      cancelled = true;
+      if (persistTimerRef.current) {
+        clearTimeout(persistTimerRef.current);
+      }
+    };
+  }, [persistBoard]);
 
   const cardsById = useMemo(() => board.cards, [board.cards]);
 
@@ -39,16 +149,16 @@ export const KanbanBoard = () => {
       return;
     }
 
-    setBoard((prev) => ({
-      ...prev,
-      columns: moveCard(prev.columns, active.id as string, over.id as string),
+    updateBoard((current) => ({
+      ...current,
+      columns: moveCard(current.columns, active.id as string, over.id as string),
     }));
   };
 
   const handleRenameColumn = (columnId: string, title: string) => {
-    setBoard((prev) => ({
-      ...prev,
-      columns: prev.columns.map((column) =>
+    updateBoard((current) => ({
+      ...current,
+      columns: current.columns.map((column) =>
         column.id === columnId ? { ...column, title } : column
       ),
     }));
@@ -56,13 +166,13 @@ export const KanbanBoard = () => {
 
   const handleAddCard = (columnId: string, title: string, details: string) => {
     const id = createId("card");
-    setBoard((prev) => ({
-      ...prev,
+    updateBoard((current) => ({
+      ...current,
       cards: {
-        ...prev.cards,
+        ...current.cards,
         [id]: { id, title, details: details || "No details yet." },
       },
-      columns: prev.columns.map((column) =>
+      columns: current.columns.map((column) =>
         column.id === columnId
           ? { ...column, cardIds: [...column.cardIds, id] }
           : column
@@ -71,22 +181,90 @@ export const KanbanBoard = () => {
   };
 
   const handleDeleteCard = (columnId: string, cardId: string) => {
-    setBoard((prev) => {
-      return {
-        ...prev,
-        cards: Object.fromEntries(
-          Object.entries(prev.cards).filter(([id]) => id !== cardId)
-        ),
-        columns: prev.columns.map((column) =>
-          column.id === columnId
-            ? {
-                ...column,
-                cardIds: column.cardIds.filter((id) => id !== cardId),
-              }
-            : column
-        ),
+    updateBoard((current) => ({
+      ...current,
+      cards: Object.fromEntries(
+        Object.entries(current.cards).filter(([id]) => id !== cardId)
+      ),
+      columns: current.columns.map((column) =>
+        column.id === columnId
+          ? {
+              ...column,
+              cardIds: column.cardIds.filter((id) => id !== cardId),
+            }
+          : column
+      ),
+    }));
+  };
+
+  const handleLogout = async () => {
+    if (persistTimerRef.current) {
+      clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+    }
+
+    if (hasLocalEditsRef.current) {
+      await persistBoard(latestBoardRef.current);
+    }
+
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  };
+
+  const handleSendChat = async () => {
+    const prompt = chatInput.trim();
+    if (!prompt || chatState === "sending") {
+      return;
+    }
+
+    const historyForApi = [...chatMessages];
+    setChatInput("");
+    setChatState("sending");
+    setChatMessages((prev) => [...prev, { role: "user", content: prompt }]);
+
+    try {
+      const response = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: prompt,
+          conversation_history: historyForApi,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("AI chat request failed.");
+      }
+
+      const payload = (await response.json()) as {
+        assistant_message: string;
+        board_updated: boolean;
+        board: BoardData;
       };
-    });
+
+      setChatMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: payload.assistant_message },
+      ]);
+
+      if (payload.board_updated && payload.board) {
+        setBoard(payload.board);
+        latestBoardRef.current = payload.board;
+        hasLocalEditsRef.current = false;
+        setSyncState("idle");
+      }
+
+      setChatState("idle");
+    } catch {
+      setChatState("error");
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: "I could not complete that request right now. Please retry.",
+        },
+      ]);
+    }
   };
 
   const activeCard = activeCardId ? cardsById[activeCardId] : null;
@@ -118,6 +296,18 @@ export const KanbanBoard = () => {
               <p className="mt-2 text-lg font-semibold text-[var(--primary-blue)]">
                 One board. Five columns. Zero clutter.
               </p>
+              <p className="mt-3 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
+                {syncState === "syncing" && "Saving changes..."}
+                {syncState === "idle" && "All changes saved"}
+                {syncState === "error" && "Save failed"}
+              </p>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="mt-4 rounded-full bg-[var(--secondary-purple)] px-4 py-2 text-xs font-semibold uppercase tracking-wide text-white transition hover:brightness-110"
+              >
+                Log out
+              </button>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-4">
@@ -133,32 +323,95 @@ export const KanbanBoard = () => {
           </div>
         </header>
 
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCorners}
-          onDragStart={handleDragStart}
-          onDragEnd={handleDragEnd}
-        >
-          <section className="grid gap-6 lg:grid-cols-5">
-            {board.columns.map((column) => (
-              <KanbanColumn
-                key={column.id}
-                column={column}
-                cards={column.cardIds.map((cardId) => board.cards[cardId])}
-                onRename={handleRenameColumn}
-                onAddCard={handleAddCard}
-                onDeleteCard={handleDeleteCard}
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCorners}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+          >
+            <section className="grid gap-6 lg:grid-cols-5">
+              {board.columns.map((column) => (
+                <KanbanColumn
+                  key={column.id}
+                  column={column}
+                  cards={column.cardIds.map((cardId) => board.cards[cardId])}
+                  onRename={handleRenameColumn}
+                  onAddCard={handleAddCard}
+                  onDeleteCard={handleDeleteCard}
+                />
+              ))}
+            </section>
+            <DragOverlay>
+              {activeCard ? (
+                <div className="w-[260px]">
+                  <KanbanCardPreview card={activeCard} />
+                </div>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
+
+          <aside className="flex h-[760px] flex-col rounded-3xl border border-[var(--stroke)] bg-white/85 p-5 shadow-[var(--shadow)] backdrop-blur">
+            <div className="border-b border-[var(--stroke)] pb-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-[var(--gray-text)]">
+                AI Sidebar
+              </p>
+              <h2 className="mt-2 font-display text-2xl font-semibold text-[var(--navy-dark)]">
+                Board Copilot
+              </h2>
+              <p className="mt-2 text-sm leading-6 text-[var(--gray-text)]">
+                Ask for edits in plain language. I can respond and update the board.
+              </p>
+            </div>
+
+            <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-1">
+              {chatMessages.map((message, index) => (
+                <div
+                  key={`${message.role}-${index}`}
+                  className={`rounded-2xl px-4 py-3 text-sm leading-6 ${
+                    message.role === "assistant"
+                      ? "border border-[var(--stroke)] bg-[var(--surface)] text-[var(--navy-dark)]"
+                      : "bg-[var(--primary-blue)] text-white"
+                  }`}
+                >
+                  {message.content}
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 border-t border-[var(--stroke)] pt-4">
+              <label
+                htmlFor="ai-chat-input"
+                className="mb-2 block text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]"
+              >
+                Message
+              </label>
+              <textarea
+                id="ai-chat-input"
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                rows={4}
+                placeholder="Move card-1 to Review and summarize the change."
+                className="w-full resize-none rounded-2xl border border-[var(--stroke)] bg-white px-3 py-2 text-sm text-[var(--navy-dark)] outline-none transition focus:border-[var(--primary-blue)]"
               />
-            ))}
-          </section>
-          <DragOverlay>
-            {activeCard ? (
-              <div className="w-[260px]">
-                <KanbanCardPreview card={activeCard} />
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.15em] text-[var(--gray-text)]">
+                  {chatState === "sending" && "Thinking..."}
+                  {chatState === "idle" && "Ready"}
+                  {chatState === "error" && "Error"}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleSendChat}
+                  disabled={chatState === "sending" || !chatInput.trim()}
+                  className="rounded-full bg-[var(--secondary-purple)] px-4 py-2 text-xs font-semibold uppercase tracking-wide text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Send
+                </button>
               </div>
-            ) : null}
-          </DragOverlay>
-        </DndContext>
+            </div>
+          </aside>
+        </div>
       </main>
     </div>
   );

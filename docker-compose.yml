@@ -1,0 +1,13 @@
+services:
+  pm-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pm-app
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    ports:
+      - "8000:8000"

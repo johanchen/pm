@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Project Management MVP</title>
+    <style>
+      :root {
+        --accent-yellow: #ecad0a;
+        --primary-blue: #209dd7;
+        --secondary-purple: #753991;
+        --navy-dark: #032147;
+        --gray-text: #888888;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Segoe UI", Arial, sans-serif;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(140deg, #f8fbfe, #f2f6fc);
+        color: var(--navy-dark);
+      }
+
+      .card {
+        width: min(620px, 92vw);
+        background: #fff;
+        border-radius: 16px;
+        border: 1px solid rgba(3, 33, 71, 0.1);
+        box-shadow: 0 18px 40px rgba(3, 33, 71, 0.12);
+        padding: 32px;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: 32px;
+      }
+
+      p {
+        margin: 0 0 18px;
+        color: var(--gray-text);
+      }
+
+      button {
+        border: 0;
+        border-radius: 999px;
+        background: var(--secondary-purple);
+        color: #fff;
+        font-weight: 600;
+        padding: 10px 18px;
+        cursor: pointer;
+      }
+
+      code {
+        display: block;
+        margin-top: 16px;
+        padding: 12px;
+        border-radius: 10px;
+        background: #f7f8fb;
+        border-left: 4px solid var(--accent-yellow);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>Hello world from FastAPI</h1>
+      <p>
+        This confirms the container serves static content at <strong>/</strong>.
+        Click the button to call <strong>/api/ping</strong>.
+      </p>
+      <button id="pingBtn" type="button">Call /api/ping</button>
+      <code id="pingResult">Waiting for API call...</code>
+    </main>
+
+    <script>
+      const button = document.getElementById("pingBtn");
+      const result = document.getElementById("pingResult");
+
+      async function callPing() {
+        result.textContent = "Calling /api/ping...";
+        try {
+          const response = await fetch("/api/ping");
+          const payload = await response.json();
+          result.textContent = JSON.stringify(payload, null, 2);
+        } catch (error) {
+          result.textContent = String(error);
+        }
+      }
+
+      button.addEventListener("click", callPing);
+    </script>
+  </body>
+</html>

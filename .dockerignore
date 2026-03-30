@@ -1,0 +1,9 @@
+.git
+.gitignore
+docs
+frontend/node_modules
+frontend/.next
+frontend/test-results
+frontend/playwright-report
+backend/.venv
+__pycache__
